@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+  <title>Maze Game v4 (Easier Mazes)</title>
+  <link rel="manifest" href="manifest.json" />
+  <style>
+    body { font-family: sans-serif; background: #f5f5f5; text-align: center; margin: 0; padding: 0; }
+    h1 { margin: 10px 0; }
+    #ui { margin: 10px; }
+    #timer, #level-info { font-size: 18px; font-weight: 600; margin: 5px; }
+    button { margin: 5px; padding: 6px 12px; font-size: 16px; cursor: pointer; }
+    canvas { background: white; border: 2px solid black; margin-top: 10px; touch-action: none; }
+    #records { margin-top: 20px; text-align: left; display: inline-block; max-width: 95%; overflow: auto; }
+    table { border-collapse: collapse; margin: 0 auto; font-size: 14px; }
+    td, th { border: 1px solid #aaa; padding: 4px 6px; }
+  </style>
+</head>
+<body>
+  <h1>Maze Game v4 (ง่ายขึ้น)</h1>
+  <div id="ui">
+    <button onclick="setDifficulty('easy')">ง่าย (15x15)</button>
+    <button onclick="setDifficulty('medium')">ปานกลาง (21x21)</button>
+    <button onclick="setDifficulty('hard')">ยาก (27x27)</button>
+    <button onclick="showRecords()">ดูบันทึกเวลา</button>
+    <button onclick="exportCSV()">ดาวน์โหลด CSV</button>
+    <button onclick="resetGame()">รีเซ็ต</button>
+  </div>
+  <div id="level-info">เลือกความยากเพื่อเริ่มเกม</div>
+  <div id="timer">เวลา: 0.00 วินาที</div>
+  <canvas id="maze" width="480" height="480"></canvas>
+  <div id="records"></div>
+  <script>
+    const canvas = document.getElementById('maze');
+    const ctx = canvas.getContext('2d');
+    const timerEl = document.getElementById('timer');
+    const levelInfo = document.getElementById('level-info');
+    const recordsEl = document.getElementById('records');
+
+    const START = { x: 0, y: 0, w: 20, h: 20 };
+    const GOAL  = { x: 0, y: 0, w: 20, h: 20 };
+
+    let wallMap = null;
+    let difficulty = null;
+    let currentRound = 0;
+    const roundsPerLevel = 3;
+    let records = { easy: [], medium: [], hard: [] };
+
+    let isDrawing = false;
+    let finished = false;
+    let startTime = 0;
+    let interval = null;
+    let lastX = 0, lastY = 0;
+    let currentCellSize = 24;
+
+    const levelConfig = {
+      easy:   { size: 15, seed: 13579, loops: 0.01 },
+      medium: { size: 21, seed: 24680, loops: 0.03 },
+      hard:   { size: 27, seed: 98765, loops: 0.05 }
+    };
+
+    function mulberry32(seed) {
+      return function() {
+        let t = seed += 0x6D2B79F5;
+        t = Math.imul(t ^ t >>> 15, t | 1);
+        t ^= t + Math.imul(t ^ t >>> 7, t | 61);
+        return ((t ^ t >>> 14) >>> 0) / 4294967296;
+      };
+    }
+
+    function generateMaze(size, seed, extraLoopRate) {
+      const rnd = mulberry32(seed);
+      const WALL = 1, PATH = 0;
+      const grid = Array.from({ length: size }, () => Array(size).fill(WALL));
+      const dirs = [ [0,-2],[2,0],[0,2],[-2,0] ];
+
+      function shuffle(arr) {
+        for (let i = arr.length - 1; i > 0; i--) {
+          const j = Math.floor(rnd() * (i + 1));
+          [arr[i], arr[j]] = [arr[j], arr[i]];
+        }
+      }
+
+      const start = { x: 1, y: 1 };
+      grid[start.y][start.x] = PATH;
+
+      function carve(x, y) {
+        const order = dirs.slice();
+        shuffle(order);
+        for (const [dx, dy] of order) {
+          const nx = x + dx;
+          const ny = y + dy;
+          if (nx > 0 && ny > 0 && nx < size - 1 && ny < size - 1 && grid[ny][nx] === WALL) {
+            grid[y + dy / 2][x + dx / 2] = PATH;
+            grid[ny][nx] = PATH;
+            carve(nx, ny);
+          }
+        }
+      }
+      carve(start.x, start.y);
+
+      const tryOpen = Math.floor(size * size * extraLoopRate);
+      for (let i = 0; i < tryOpen; i++) {
+        const x = 2 + Math.floor(rnd() * (size - 4));
+        const y = 2 + Math.floor(rnd() * (size - 4));
+        if (grid[y][x] === WALL) grid[y][x] = PATH;
+      }
+      return grid;
+    }
+
+    function setDifficulty(level) {
+      difficulty = level;
+      currentRound = 0;
+      recordsEl.innerHTML = '';
+      drawMazeByDifficulty(level);
+      levelInfo.textContent = `ระดับ: ${level} (รอบ ${currentRound + 1} / ${roundsPerLevel})`;
+    }
+
+    function drawMazeByDifficulty(level) {
+      const { size, seed, loops } = levelConfig[level];
+      const maze = generateMaze(size, seed, loops);
+      const cell = Math.floor(canvas.width / size);
+      currentCellSize = cell;
+
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.fillStyle = '#fff';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      ctx.fillStyle = '#000';
+      for (let y = 0; y < size; y++) {
+        for (let x = 0; x < size; x++) {
+          if (maze[y][x] === 1) {
+            ctx.fillRect(x * cell, y * cell, cell, cell);
+          }
+        }
+      }
+
+      START.x = cell * 1; START.y = cell * 1; START.w = cell; START.h = cell;
+      GOAL.x = cell * (size - 2); GOAL.y = cell * (size - 2); GOAL.w = cell; GOAL.h = cell;
+
+      ctx.fillStyle = 'green';
+      ctx.fillRect(START.x, START.y, START.w, START.h);
+      ctx.fillStyle = 'red';
+      ctx.fillRect(GOAL.x, GOAL.y, GOAL.w, GOAL.h);
+
+      ctx.lineWidth = Math.max(2, cell * 0.4);
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      ctx.strokeStyle = '#0044aa';
+
+      wallMap = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      resetTimer();
+    }
+
+    function resetGame() {
+      if (difficulty) {
+        currentRound = 0;
+        records[difficulty] = [];
+        drawMazeByDifficulty(difficulty);
+        levelInfo.textContent = `ระดับ: ${difficulty} (รอบ ${currentRound + 1} / ${roundsPerLevel})`;
+      }
+    }
+
+    function resetTimer() {
+      clearInterval(interval);
+      timerEl.textContent = 'เวลา: 0.00 วินาที';
+      finished = false;
+      isDrawing = false;
+    }
+
+    function startTimer() {
+      startTime = performance.now();
+      interval = setInterval(() => {
+        timerEl.textContent = 'เวลา: ' + ((performance.now() - startTime) / 1000).toFixed(2) + ' วินาที';
+      }, 50);
+    }
+
+    function stopTimer() { clearInterval(interval); }
+    function getElapsed() { return (performance.now() - startTime) / 1000; }
+
+    function inRect(x, y, r) {
+      return x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h;
+    }
+
+    function isWall(x, y) {
+      if (x < 0 || y < 0 || x >= canvas.width || y >= canvas.height) return true;
+      const idx = (y * canvas.width + x) * 4;
+      const d = wallMap.data;
+      return d[idx] === 0 && d[idx+1] === 0 && d[idx+2] === 0;
+    }
+
+    function pathIsClear(x1, y1, x2, y2) {
+      const dx = x2 - x1, dy = y2 - y1;
+      const steps = Math.max(Math.abs(dx), Math.abs(dy));
+      for (let i = 0; i <= steps; i++) {
+        const x = Math.round(x1 + dx * i / steps);
+        const y = Math.round(y1 + dy * i / steps);
+        if (isWall(x, y)) return false;
+      }
+      return true;
+    }
+
+    function pointerDown(x, y) {
+      if (finished || !difficulty) return;
+      if (inRect(x, y, START)) {
+        isDrawing = true;
+        ctx.beginPath();
+        ctx.moveTo(x, y);
+        lastX = x; lastY = y;
+        startTimer();
+      }
+    }
+
+    function pointerMove(x, y) {
+      if (!isDrawing || finished) return;
+      if (!pathIsClear(lastX, lastY, x, y)) return;
+
+      ctx.lineTo(x, y);
+      ctx.stroke();
+      lastX = x; lastY = y;
+
+      if (inRect(lastX, lastY, GOAL)) {
+        finished = true;
+        isDrawing = false;
+        stopTimer();
+
+        const t = getElapsed();
+        records[difficulty].push(t);
+        alert(`ผ่านด่าน! เวลา: ${t.toFixed(2)} วินาที`);
+
+        currentRound++;
+        if (currentRound < roundsPerLevel) {
+          drawMazeByDifficulty(difficulty);
+          levelInfo.textContent = `ระดับ: ${difficulty} (รอบ ${currentRound + 1} / ${roundsPerLevel})`;
+        } else {
+          levelInfo.textContent = `ผ่านระดับ ${difficulty} ครบ ${roundsPerLevel} รอบ!`;
+        }
+      }
+    }
+
+    function pointerUp() { isDrawing = false; }
+
+    function getPos(e) {
+      const rect = canvas.getBoundingClientRect();
+      if (e.touches && e.touches.length > 0) {
+        const t = e.touches[0];
+        return {
+          x: Math.round((t.clientX - rect.left) * (canvas.width / rect.width)),
+          y: Math.round((t.clientY - rect.top) * (canvas.height / rect.height))
+        };
+      } else {
+        return {
+          x: Math.round((e.clientX - rect.left) * (canvas.width / rect.width)),
+          y: Math.round((e.clientY - rect.top) * (canvas.height / rect.height))
+        };
+      }
+    }
+
+    canvas.addEventListener('mousedown', (e) => { const p = getPos(e); pointerDown(p.x, p.y); });
+    canvas.addEventListener('mousemove', (e) => { const p = getPos(e); pointerMove(p.x, p.y); });
+    canvas.addEventListener('mouseup', pointerUp);
+
+    canvas.addEventListener('touchstart', (e) => { e.preventDefault(); const p = getPos(e); pointerDown(p.x, p.y); }, { passive: false });
+    canvas.addEventListener('touchmove',  (e) => { e.preventDefault(); const p = getPos(e); pointerMove(p.x, p.y); }, { passive: false });
+    canvas.addEventListener('touchend',   (e) => { e.preventDefault(); pointerUp(); }, { passive: false });
+
+    function showRecords() {
+      let html = '<h2>บันทึกเวลา</h2><table><tr><th>ระดับ</th><th>รอบ</th><th>เวลา (วินาที)</th></tr>';
+      for (const lv of ['easy', 'medium', 'hard']) {
+        records[lv].forEach((time, i) => {
+          html += `<tr><td>${lv}</td><td>${i + 1}</td><td>${time.toFixed(2)}</td></tr>`;
+        });
+      }
+      html += '</table>';
+      recordsEl.innerHTML = html;
+    }
+
+    function exportCSV() {
+      let csv = "ระดับ,รอบ,เวลา(วินาที)\n";
+      for (const lv of ['easy', 'medium', 'hard']) {
+        records[lv].forEach((time, i) => {
+          csv += `${lv},${i + 1},${time.toFixed(2)}\n`;
+        });
+      }
+      const blob = new Blob([csv], { type: "text/csv" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = "maze_records.csv";
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+    }
+
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register('sw.js');
+      });
+    }
+  </script>
+</body>
+</html>
